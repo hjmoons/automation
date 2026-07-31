@@ -88,9 +88,12 @@ if [[ "${ASSUME_YES}" != true ]]; then
   esac
 fi
 
+# 정리 스크립트는 한 단계가 실패해도 나머지 단계를 계속 시도해야 하므로,
+# 아래 명령들은 실패해도 set -e 로 스크립트 전체가 죽지 않도록 || 로 받아준다.
+
 if command -v kind >/dev/null 2>&1 && kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   log "kind 클러스터 '${CLUSTER_NAME}' 삭제 중..."
-  kind delete cluster --name "${CLUSTER_NAME}"
+  kind delete cluster --name "${CLUSTER_NAME}" || warn "kind 클러스터 삭제 실패 (계속 진행합니다)"
 else
   warn "kind 클러스터 '${CLUSTER_NAME}' 를 찾을 수 없어 건너뜁니다."
 fi
@@ -98,10 +101,10 @@ fi
 if command -v colima >/dev/null 2>&1 && colima status "${COLIMA_PROFILE}" >/dev/null 2>&1; then
   if [[ "${PURGE}" == true ]]; then
     log "colima(profile=${COLIMA_PROFILE}) 완전 삭제 중..."
-    colima delete "${COLIMA_PROFILE}" -f
+    colima delete "${COLIMA_PROFILE}" -f || warn "colima 삭제 실패 (계속 진행합니다)"
   else
     log "colima(profile=${COLIMA_PROFILE}) 정지 중..."
-    colima stop "${COLIMA_PROFILE}"
+    colima stop "${COLIMA_PROFILE}" || warn "colima 정지 실패 (계속 진행합니다)"
   fi
 else
   warn "colima(profile=${COLIMA_PROFILE}) 가 실행 중이 아니거나 존재하지 않아 건너뜁니다."
@@ -112,10 +115,13 @@ if [[ "${REMOVE_TOOLS}" == true ]]; then
     warn "brew 가 없어 도구 삭제를 건너뜁니다."
   else
     log "brew 로 설치된 도구를 삭제합니다."
+    # `brew list --formula` 는 항목이 여러 개면 ls 처럼 한 줄에 여러 이름을
+    # 컬럼으로 묶어서 출력하기도 한다. grep -qx(줄 전체 일치)가 그러면 못 찾으므로
+    # tr 로 공백까지 개행으로 쪼개서 이름 하나당 한 줄이 되도록 정규화한다.
     for formula in "${BREW_FORMULAS[@]}"; do
-      if brew list --formula 2>/dev/null | grep -qx "${formula}"; then
+      if brew list --formula 2>/dev/null | tr -s ' \t' '\n' | grep -qx "${formula}"; then
         log "brew uninstall ${formula}"
-        brew uninstall "${formula}"
+        brew uninstall "${formula}" || warn "'${formula}' 삭제 실패 (계속 진행합니다)"
       else
         warn "'${formula}' 은(는) brew로 설치되어 있지 않아 건너뜁니다."
       fi

@@ -119,3 +119,28 @@ PINNED_KIND_NODE_IMAGE="kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea
 # 전부 삭제하고 다음에 install-kubelab-mac.sh로 처음부터 재설치할 계획일 때
 ./uninstall-kubelab-mac.sh --remove-tools -y
 ```
+
+## 트러블슈팅
+
+### colima start 시 "error getting qcow image" 에러
+
+```
+error starting vm: error at 'creating and starting': error getting qcow image: error during image download:
+error resolving download URL 'https://github.com/abiosoft/colima-core/releases/download/...': resolve redirect for ~
+```
+
+**원인**: colima는 VM을 처음 띄울 때 기본 OS 디스크 이미지를 GitHub 릴리스에서 받아옵니다.
+GitHub 릴리스 다운로드 링크는 실제 파일이 아니라 CDN(`objects.githubusercontent.com`)으로
+가는 리다이렉트인데, 그 순간 네트워크/DNS가 불안정하면 리다이렉트 대상을 못 찾아 위 에러가
+납니다. 스크립트나 colima 설정 문제가 아니라 그 시점의 네트워크 문제였습니다.
+
+**해결**: 스크립트를 그냥 다시 실행하면 됩니다 (`./install-kubelab-mac.sh`). 재시도만으로
+해결됐고, 원인이 명확한 DNS/네트워크 문제였는지는 특정하지 못했습니다. 계속 반복되면:
+
+```bash
+# 다운로드 캐시가 깨진 채로 남아있을 수 있음 — 지우고 재시도
+rm -rf ~/.cache/lima
+
+# 실제 원인을 자세히 보고 싶으면
+curl -v -L "https://github.com/abiosoft/colima-core/releases/download/v0.10.4/ubuntu-24.04-minimal-cloudimg-arm64-docker.raw.gz" -o /dev/null
+```
