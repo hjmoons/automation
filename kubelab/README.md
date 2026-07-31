@@ -48,32 +48,39 @@ Mac에 colima + kind 기반 kubernetes 학습/실습 환경을 설치/삭제하�
 | kubens (kubectx) | 네임스페이스 전환 CLI | brew (없을 때만) |
 | istioctl / Istio | 게이트웨이용 컨트롤플레인 (Envoy 프록시) | brew (없을 때만) |
 | k9s | 클러스터 TUI 대시보드 | brew (없을 때만) |
-| mkcert | 로컬 신뢰 TLS 인증서 발급 (443용) | brew (없을 때만) |
 | metrics-server | `kubectl top`, k9s 리소스 뷰용 메트릭 | 클러스터 내부에 매니페스트 적용 |
 
 nginx ingress controller는 EOL이라 Istio를 대신 설치합니다. 다만 서비스 메시 전체(사이드카
 자동 주입 등)가 필요한 게 아니라 게이트웨이 하나만 있으면 되므로 Kubernetes
 [Gateway API](https://gateway-api.sigs.k8s.io/) 방식을 씁니다.
 
-1. Gateway API CRD 설치 (experimental channel — 임의 TCP 포트(`-p`)에 필요한 TCPRoute가 여기 포함됨)
+1. Gateway API CRD 설치 (experimental channel — 443 TLS passthrough, 임의 TCP 포트(`-p`)에
+   필요한 TLSRoute/TCPRoute가 여기 포함됨)
 2. Istio는 `profile=minimal`로 설치 — 컨트롤플레인(istiod)만 설치되고, 정적으로 떠 있는
    `istio-ingressgateway` 같은 건 없음
-3. `mkcert`로 `*.kubelab.local` 와일드카드 인증서를 만들어 `istio-system`에 `kubelab-tls`
-   Secret으로 등록 (아래 "TLS/HTTPS" 참고)
-4. `istio-system` 네임스페이스에 `gatewayClassName: istio`인 Gateway 리소스
+3. `istio-system` 네임스페이스에 `gatewayClassName: istio`인 Gateway 리소스
    (`kubelab-gateway`)를 적용하면, 그 즉시 Istio가 필요한 프록시 Deployment/Service를
    자동으로 만들어줌 → 이걸 hostNetwork로 패치해서 80/443(+추가 포트)을 kind 노드에 직접 노출
 
-즉 필요한 만큼만(게이트웨이 하나) 떠 있고, 별도 애드온이나 사이드카 주입 같은 메시 기능은
-전혀 켜져 있지 않습니다.
+443은 게이트웨이가 인증서 없이 그냥 통과(Passthrough)시킵니다 — SNI(호스트명)만 보고
+뒤로 흘려보낼 뿐, TLS 종료(=인증서)는 각 앱이 자기 파드 안에서 직접 처리합니다. 그래서
+게이트웨이 쪽에는 인증서 관리가 전혀 없습니다.
+
+즉 필요한 만큼만(게이트웨이 하나) 떠 있고, 별도 애드온이나 사이드카 주입, 중앙 인증서 관리
+같은 것도 전혀 켜져 있지 않습니다.
 
 ### 앱 배포 시 사용법 (Gateway를 새로 만들지 마세요)
 
 Gateway는 클러스터에 이미 하나(`kubelab-gateway`, `istio-system`) 떠 있고, 모든 네임스페이스의
 Route가 거기 붙을 수 있도록 열려 있습니다(`allowedRoutes.namespaces.from: All`). 앱을 배포할 땐
-Gateway를 새로 만들지 말고, **본인 네임스페이스에 HTTPRoute만** 만들어서 기존 Gateway에 붙이면 됩니다.
+Gateway를 새로 만들지 말고, **본인 네임스페이스에 Route만** 만들어서 기존 Gateway에 붙이면 됩니다.
+
+- **HTTP(80)만 쓰는 앱** → `HTTPRoute` (호스트명/경로 기반 라우팅, 인증서 필요 없음)
+- **HTTPS(443)를 쓰는 앱** → `TLSRoute` (SNI/호스트명 기반, 경로 라우팅은 불가. 인증서는
+  게이트웨이가 아니라 앱 파드 자신이 직접 종료해야 함)
 
 ```yaml
+# HTTP 예시
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -91,17 +98,25 @@ spec:
       port: 80
 ```
 
-#### TLS / HTTPS
-
-443은 게이트웨이에서 TLS를 종료(Terminate)합니다. 인증서는 설치 시 `mkcert`로 만든
-`*.kubelab.local` 와일드카드 인증서(Secret `kubelab-tls`, `istio-system`)를 모든 앱이
-공유합니다. `mkcert -install`이 맥 로컬 키체인에 신뢰 루트 CA를 등록해두기 때문에
-브라우저/curl에서 인증서 경고 없이 접속됩니다.
-
-사용하려면:
-1. 맥 `/etc/hosts`에 추가: `127.0.0.1 myapp.kubelab.local`
-2. HTTPRoute의 `hostnames`에 `myapp.kubelab.local` 지정 (위 예시 참고)
-3. `curl https://myapp.kubelab.local/`
+```yaml
+# HTTPS(TLS passthrough) 예시 — myapp-svc 는 자체 인증서로 TLS 를 직접 종료해야 함
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: myapp-tlsroute
+  namespace: myapp
+spec:
+  parentRefs:
+  - name: kubelab-gateway
+    namespace: istio-system
+    sectionName: https
+  hostnames:
+  - "myapp.kubelab.local"
+  rules:
+  - backendRefs:
+    - name: myapp-svc
+      port: 8443
+```
 
 ### kubernetes 버전 고정
 
