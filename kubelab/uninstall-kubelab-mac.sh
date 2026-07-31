@@ -5,8 +5,8 @@
 # install-kubelab-mac.sh 로 구성한 kind 클러스터 + colima VM (+ brew 도구) 을 정리하는 스크립트.
 # - kind 클러스터 삭제 (Istio, metrics-server 등 클러스터 내부 리소스는 클러스터 삭제로 함께 제거됨)
 # - colima 는 기본적으로 정지(stop)만 하며, --purge 옵션을 주면 VM 자체를 삭제(delete)
-# - --remove-tools 옵션을 주면 install-kubelab-mac.sh 가 설치했던
-#   colima/docker/kind/kubectx/istioctl/k9s(brew) + kubectl(직접 다운로드 바이너리) 까지 전부 삭제 (재설치 전제)
+# - --remove-tools 옵션을 주면 install-kubelab-mac.sh 가 brew 로 설치했던
+#   colima/docker/kind/kubectl/kubectx/istioctl/k9s 까지 전부 삭제 (재설치 전제)
 #
 # Usage:
 #   ./uninstall-kubelab-mac.sh [-n|--name <cluster-name>] [--purge] [--remove-tools] [-y|--yes]
@@ -19,9 +19,10 @@ PURGE=false
 REMOVE_TOOLS=false
 ASSUME_YES=false
 
-# install-kubelab-mac.sh 에서 brew 로 설치하는 도구 목록과 동일 (kubectl 은 brew 가 아니라
-# 클러스터 버전에 맞춰 직접 다운로드한 바이너리라 별도로 처리한다)
-BREW_FORMULAS=(colima docker kind kubectx istioctl k9s)
+# install-kubelab-mac.sh 에서 brew 로 설치하는 도구 목록과 동일.
+# brew 에서 kubectl 은 실제로는 kubernetes-cli formula 의 별칭(alias)이라
+# `brew list --formula` 에는 kubernetes-cli 로 나오므로 그 이름을 사용한다.
+BREW_FORMULAS=(colima docker kind kubernetes-cli kubectx istioctl k9s)
 
 log()  { printf '\033[1;32m[INFO]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*"; }
@@ -34,8 +35,8 @@ Usage: $(basename "$0") [options]
 
   -n, --name <name>   kind 클러스터 이름 (기본값: ${CLUSTER_NAME})
       --purge          colima VM 을 정지가 아닌 완전 삭제(colima delete)
-      --remove-tools   설치했던 CLI 도구까지 전부 삭제 (colima 는 자동으로 완전 삭제 처리)
-                        대상: ${BREW_FORMULAS[*]} kubectl
+      --remove-tools   brew 로 설치했던 CLI 도구까지 전부 삭제 (colima 는 자동으로 완전 삭제 처리)
+                        대상: ${BREW_FORMULAS[*]} (kubernetes-cli = kubectl)
   -y, --yes            확인 프롬프트 없이 바로 진행
   -h, --help           도움말 출력
 
@@ -119,16 +120,6 @@ if [[ "${REMOVE_TOOLS}" == true ]]; then
         warn "'${formula}' 은(는) brew로 설치되어 있지 않아 건너뜁니다."
       fi
     done
-
-    # kubectl 은 install-kubelab-mac.sh 가 클러스터 버전에 맞춰 dl.k8s.io 에서
-    # 직접 받은 바이너리라 brew 대상이 아니므로 파일을 직접 지운다.
-    kubectl_path="$(brew --prefix)/bin/kubectl"
-    if [[ -f "${kubectl_path}" ]]; then
-      log "kubectl 바이너리 삭제: ${kubectl_path}"
-      rm -f "${kubectl_path}"
-    else
-      warn "kubectl 바이너리(${kubectl_path}) 를 찾을 수 없어 건너뜁니다."
-    fi
   fi
 fi
 

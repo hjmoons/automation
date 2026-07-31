@@ -3,7 +3,7 @@
 # install-kubelab-mac.sh
 #
 # Mac 에서 colima + kind 기반 kubernetes 학습/실습 환경(kubelab)을 처음부터 구성하는 자동화 스크립트.
-# - colima / kind / kubens(kubectx) / istioctl / k9s 이 없으면 최신 버전으로 설치
+# - colima / kind / kubectl / kubens(kubectx) / istioctl / k9s 이 없으면 brew 로 최신 버전 설치
 # - colima VM 을 지정한 CPU/메모리로 기동
 # - kind 클러스터를 아래 PINNED_K8S_VERSION 에 고정된 kubernetes 버전으로 생성하고
 #   80, 443(+추가 옵션 포트)을 호스트에 매핑
@@ -11,10 +11,9 @@
 #    PINNED_KIND_NODE_IMAGE 값만 사람이 직접 갱신해서 관리한다. 자동으로 매번
 #    최신을 따라가지 않는 이유는 재현성 때문 — 몇 달 뒤 재실행해도 동일한 버전이
 #    뜨도록 고정한다)
-# - kind 클러스터가 실제로 사용 중인 kubernetes 버전을 감지해서, 그 버전에 정확히
-#   맞는 kubectl 바이너리를 다운로드/설치 (kubectl 은 kube-apiserver/kubelet 과
-#   minor 버전 ±1 이내여야 하는 버전 스큐 정책 때문에 brew 의 "항상 최신" 방식 대신
-#   클러스터 버전에 맞춰 정확히 고정 설치)
+#   kubectl 은 kube-apiserver/kubelet 과 minor 버전 ±1 이내까지는 공식 지원 범위라,
+#   brew 의 최신 kubectl 과 PINNED_K8S_VERSION 사이의 스큐는 그 범위 안에서는 문제없다.
+#   PINNED_K8S_VERSION 을 너무 오래 방치하면 범위를 벗어날 수 있으니 가끔 갱신할 것.
 # - kubectl 컨텍스트를 자동으로 kind 클러스터로 연결
 # - nginx ingress controller 는 EOL 이므로 Istio ingress gateway(Envoy)를 설치하고
 #   Gateway 리소스로 80/443(+추가 포트)를 노출
@@ -69,8 +68,8 @@ Usage: $(basename "$0") [options]
 
 기본적으로 80, 443 포트는 항상 열립니다.
 kind 클러스터는 스크립트 상단에 고정해 둔 PINNED_K8S_VERSION(v${PINNED_K8S_VERSION})으로 생성되며,
-kubectl 은 그 클러스터 버전에 정확히 맞춰 자동으로 설치/고정됩니다
-(버전 스큐 정책: kubectl 은 kube-apiserver/kubelet 과 minor 버전 ±1 이내여야 함).
+kubectl 은 다른 도구들과 동일하게 brew 로 설치됩니다 (kube-apiserver/kubelet 과
+minor 버전 ±1 이내까지는 공식 지원 범위라 patch 버전까지 맞출 필요는 없음).
 새 kubernetes/kind 버전이 나오면 스크립트 상단의 PINNED_K8S_VERSION /
 PINNED_KIND_NODE_IMAGE 값을 직접 갱신해서 관리하세요.
 EOF
@@ -212,69 +211,6 @@ EOF
   rm -f "${kind_config}"
 }
 
-# ---------------------------------------------------------------------------
-# kind 클러스터가 실제로 사용 중인 kubernetes 버전 감지
-#
-# kind 노드는 도커 컨테이너이며, 이미지 태그(kindest/node:vX.Y.Z)에 실제
-# kubernetes 버전이 그대로 들어있다. kubectl 없이도 docker inspect 만으로 확인 가능.
-# ---------------------------------------------------------------------------
-detect_running_k8s_version() {
-  local node_name image_tag
-  node_name="$(kind get nodes --name "${CLUSTER_NAME}" | head -n1)"
-  [[ -n "${node_name}" ]] || die "kind 노드를 찾을 수 없습니다."
-
-  image_tag="$(docker inspect --format '{{.Config.Image}}' "${node_name}")"
-  K8S_VERSION="$(printf '%s' "${image_tag}" | sed -E 's#.*kindest/node:v([0-9]+\.[0-9]+\.[0-9]+).*#\1#')"
-  [[ "${K8S_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "kind 노드의 kubernetes 버전을 확인할 수 없습니다. (image: ${image_tag})"
-
-  log "kind 클러스터가 실제로 사용 중인 kubernetes 버전: v${K8S_VERSION}"
-}
-
-# ---------------------------------------------------------------------------
-# 클러스터 버전에 정확히 맞는 kubectl 설치
-#
-# brew 의 kubectl 은 항상 최신 하나만 유지되어 특정 버전 고정이 어렵기 때문에,
-# 공식 배포 바이너리(dl.k8s.io)를 클러스터와 동일한 버전으로 직접 받아 고정한다.
-# ---------------------------------------------------------------------------
-install_matching_kubectl() {
-  local arch
-  case "$(uname -m)" in
-    arm64)  arch="arm64" ;;
-    x86_64) arch="amd64" ;;
-    *) die "지원하지 않는 아키텍처입니다: $(uname -m)" ;;
-  esac
-
-  if command -v kubectl >/dev/null 2>&1; then
-    local current
-    current="$(kubectl version --client -o json 2>/dev/null | awk -F'"' '/"gitVersion"/{print $4; exit}')"
-    current="${current#v}"
-    if [[ "${current}" == "${K8S_VERSION}" ]]; then
-      log "kubectl 이 이미 클러스터 버전(v${K8S_VERSION})과 일치합니다. 재설치를 건너뜁니다."
-      return
-    fi
-    warn "kubectl 버전(v${current:-unknown}) 이 클러스터 버전(v${K8S_VERSION}) 과 달라 맞춰서 설치합니다."
-  else
-    log "kubectl 이 없어 클러스터 버전(v${K8S_VERSION}) 에 맞춰 설치합니다."
-  fi
-
-  # brew 로 설치된 kubectl 이 있으면 버전 고정이 불가능하므로 제거하고 대체한다.
-  if command -v brew >/dev/null 2>&1 && brew list --formula 2>/dev/null | grep -qx kubectl; then
-    log "brew 로 설치된 kubectl 은 버전 고정이 안 되어 제거하고 지정 버전으로 대체합니다."
-    brew uninstall kubectl
-  fi
-
-  local bin_dir
-  bin_dir="$(brew --prefix)/bin"
-  mkdir -p "${bin_dir}"
-
-  log "kubectl v${K8S_VERSION} (${arch}) 다운로드 중..."
-  curl -fsSL -o "${bin_dir}/kubectl" \
-    "https://dl.k8s.io/release/v${K8S_VERSION}/bin/darwin/${arch}/kubectl"
-  chmod +x "${bin_dir}/kubectl"
-
-  log "kubectl 설치 완료: $(kubectl version --client -o json | awk -F'"' '/"gitVersion"/{print $4; exit}')"
-}
-
 setup_kubeconfig() {
   log "kubectl 컨텍스트를 kind-${CLUSTER_NAME} 로 설정합니다."
   kind export kubeconfig --name "${CLUSTER_NAME}"
@@ -383,14 +319,13 @@ ensure_homebrew
 ensure_cli colima colima
 ensure_cli docker docker
 ensure_cli kind kind
+ensure_cli kubectl kubectl
 ensure_cli kubens kubectx
 ensure_cli istioctl istioctl
 ensure_cli k9s k9s
 
 start_colima
 create_kind_cluster
-detect_running_k8s_version
-install_matching_kubectl
 setup_kubeconfig
 install_metrics_server
 install_istio
@@ -403,7 +338,7 @@ cat <<EOF
 
   클러스터 이름   : ${CLUSTER_NAME}
   kubectl 컨텍스트: kind-${CLUSTER_NAME}
-  kubernetes 버전 : v${K8S_VERSION} (kubectl 을 이 버전에 맞춰 고정 설치함)
+  kubernetes 버전 : v${K8S_VERSION}
   colima 리소스   : CPU ${COLIMA_CPU} / Memory ${COLIMA_MEMORY}GB
   열린 포트       : 80, 443${EXTRA_PORTS:+, ${EXTRA_PORTS[*]}}
 

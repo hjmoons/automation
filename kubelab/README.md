@@ -44,7 +44,7 @@ Mac에 colima + kind 기반 kubernetes 학습/실습 환경을 설치/삭제하�
 | colima | 컨테이너 런타임(VM) | brew (없을 때만) |
 | docker | colima와 통신하는 CLI (Docker Desktop 아님) | brew (없을 때만) |
 | kind | 로컬 kubernetes 클러스터 | brew (없을 때만) |
-| kubectl | 클러스터 제어 CLI | **클러스터 버전에 맞춰 매번 직접 다운로드/고정** (brew 아님) |
+| kubectl | 클러스터 제어 CLI | brew (없을 때만) |
 | kubens (kubectx) | 네임스페이스 전환 CLI | brew (없을 때만) |
 | istioctl / Istio | ingress gateway (Envoy) | brew (없을 때만) |
 | k9s | 클러스터 TUI 대시보드 | brew (없을 때만) |
@@ -64,13 +64,10 @@ PINNED_KIND_NODE_IMAGE="kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea
 
 - 2026-07-31 기준 kind v0.32.0의 기본/권장 노드 이미지입니다.
 - `-k/--k8s-version`을 주지 않으면 이 버전으로 kind 클러스터가 생성됩니다.
-- kubectl은 항상 **실제로 떠 있는 kind 클러스터의 버전**을 감지해서 그 버전과 정확히
-  일치하는 바이너리를 [dl.k8s.io](https://dl.k8s.io)에서 직접 받아 설치합니다. brew의
-  kubectl은 "항상 최신 하나"만 유지되어 특정 버전 고정이 안 되기 때문에, kubectl만
-  brew 대신 이 방식을 씁니다. (kubectl은 kube-apiserver/kubelet과 minor 버전 ±1
-  이내여야 하는 버전 스큐 정책이 있어, 버전을 맞추지 않으면 호환성 문제가 생길 수 있습니다.)
-- 클러스터가 이미 존재하면(재실행 시) 새로 만들지 않고, 그 클러스터의 실제 버전에
-  kubectl만 다시 맞춥니다.
+- kubectl은 다른 도구들과 동일하게 brew로 설치되는 최신 버전을 그대로 씁니다.
+  kubectl은 kube-apiserver/kubelet과 minor 버전 ±1 이내까지는 공식 지원 범위라,
+  patch 버전까지 정확히 맞출 필요는 없습니다. 다만 `PINNED_K8S_VERSION`을 너무 오래
+  갱신하지 않고 방치하면 이 범위를 벗어날 수 있으니 가끔 최신 버전으로 올려주세요.
 
 **새 버전으로 업데이트하는 방법**: [kind 릴리스 노트](https://github.com/kubernetes-sigs/kind/releases)에서
 새 기본 노드 이미지의 `kindest/node:vX.Y.Z@sha256:...` 값을 확인해 `PINNED_K8S_VERSION`,
