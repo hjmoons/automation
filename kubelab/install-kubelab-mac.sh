@@ -15,8 +15,12 @@
 #   brew 의 최신 kubectl 과 PINNED_K8S_VERSION 사이의 스큐는 그 범위 안에서는 문제없다.
 #   PINNED_K8S_VERSION 을 너무 오래 방치하면 범위를 벗어날 수 있으니 가끔 갱신할 것.
 # - kubectl 컨텍스트를 자동으로 kind 클러스터로 연결
-# - nginx ingress controller 는 EOL 이므로 Istio ingress gateway(Envoy)를 설치하고
-#   Gateway 리소스로 80/443(+추가 포트)를 노출
+# - nginx ingress controller 는 EOL 이므로 Istio 를 대신 설치. 전체 서비스 메시가
+#   필요한 게 아니라 게이트웨이만 필요하므로 Kubernetes Gateway API 방식을 사용한다:
+#   Gateway API CRD 설치 → Istio 는 profile=minimal(컨트롤플레인만, 정적
+#   ingressgateway 없음) 로 설치 → Gateway 리소스(gatewayClassName: istio)를
+#   적용하면 Istio 가 그 즉시 필요한 프록시 Deployment/Service 를 자동 생성.
+#   80/443(+추가 포트)을 그 Gateway 리소스로 노출한다.
 #
 # Usage:
 #   ./install-kubelab-mac.sh [-c|--cpu <num>] [-m|--memory <GB>] [-p|--port <port>]... [-n|--name <cluster-name>] [-k|--k8s-version <x.y.z>]
@@ -36,6 +40,11 @@ set -euo pipefail
 PINNED_K8S_VERSION="1.36.1"
 PINNED_KIND_NODE_IMAGE="kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
 
+# Gateway API CRD 버전. TLS passthrough(443)/임의 TCP 포트를 쓰려면 TCPRoute,
+# TLSRoute 가 포함된 experimental 채널이 필요하다.
+# (https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.6.1)
+PINNED_GATEWAY_API_VERSION="1.6.1"
+
 # ---------------------------------------------------------------------------
 # 기본값
 # ---------------------------------------------------------------------------
@@ -45,6 +54,7 @@ COLIMA_CPU=4
 COLIMA_MEMORY=8
 EXTRA_PORTS=()
 K8S_VERSION=""   # -k/--k8s-version 로 지정 안 하면 PINNED_K8S_VERSION 사용
+GATEWAY_NAME="kubelab-gateway"
 
 # ---------------------------------------------------------------------------
 # 로그 헬퍼
@@ -60,7 +70,7 @@ Usage: $(basename "$0") [options]
 
   -c, --cpu <num>       colima VM 에 할당할 CPU 코어 수 (기본값: ${COLIMA_CPU})
   -m, --memory <num>    colima VM 에 할당할 메모리(GB) (기본값: ${COLIMA_MEMORY})
-  -p, --port <port>     Istio Gateway 에 추가로 열어줄 포트 (여러 번 지정 가능)
+  -p, --port <port>     Gateway 에 추가로 열어줄 포트 (여러 번 지정 가능)
   -n, --name <name>     kind 클러스터 이름 (기본값: ${CLUSTER_NAME})
   -k, --k8s-version <x.y.z>
                          kind 클러스터의 kubernetes 버전 직접 지정 (기본값: PINNED_K8S_VERSION=${PINNED_K8S_VERSION})
@@ -237,14 +247,93 @@ install_metrics_server() {
 }
 
 # ---------------------------------------------------------------------------
-# Istio 설치 (nginx ingress controller EOL 대응 -> Istio ingress gateway)
+# Istio 설치 (nginx ingress controller EOL 대응, Gateway API 방식)
+#
+# 서비스 메시 전체가 아니라 게이트웨이만 필요하므로:
+#   1) Gateway API CRD 설치 (istiod 가 시작할 때 이걸 보고 GatewayClass 를 자동 등록)
+#   2) Istio 는 profile=minimal 로 설치 (컨트롤플레인만, 정적 ingressgateway 없음)
+# 실제 게이트웨이 프록시는 apply_gateway() 에서 Gateway 리소스를 적용하는 순간
+# Istio 가 알아서 만들어준다.
 # ---------------------------------------------------------------------------
 install_istio() {
-  log "Istio(istiod + ingressgateway) 를 설치합니다."
-  istioctl install --set profile=default -y
+  if kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
+    log "Gateway API CRD 이미 설치되어 있음."
+  else
+    log "Gateway API CRD(experimental channel, v${PINNED_GATEWAY_API_VERSION}) 설치 중..."
+    kubectl apply --server-side \
+      -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/v${PINNED_GATEWAY_API_VERSION}/experimental-install.yaml"
+  fi
 
-  log "istio-ingressgateway 가 kind 노드에서 80/443(+추가 포트)을 직접 사용할 수 있도록 hostNetwork 로 패치합니다."
-  kubectl patch deployment istio-ingressgateway -n istio-system --type merge -p '{
+  log "Istio(istiod, profile=minimal) 를 설치합니다."
+  istioctl install --set profile=minimal -y
+
+  kubectl rollout status deployment/istiod -n istio-system --timeout=180s
+}
+
+# ---------------------------------------------------------------------------
+# Gateway API Gateway 리소스 적용
+#
+# gatewayClassName: istio 로 리소스를 만들면 Istio 가 그 이름 그대로
+# Deployment/Service 를 자동 생성한다. kind 에서는 그 프록시가 80/443(+추가 포트)을
+# 직접 리슨해야 extraPortMappings 와 맞물리므로, 자동 생성된 뒤에 hostNetwork 로 패치한다.
+# ---------------------------------------------------------------------------
+apply_gateway() {
+  log "Gateway API Gateway 리소스를 생성합니다. (80, 443${EXTRA_PORTS:+, ${EXTRA_PORTS[*]}})"
+
+  local gateway_yaml
+  gateway_yaml="$(mktemp -t gateway-api)"
+
+  {
+    cat <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${GATEWAY_NAME}
+  namespace: istio-system
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    port: 443
+    protocol: TLS
+    tls:
+      mode: Passthrough
+    allowedRoutes:
+      namespaces:
+        from: All
+EOF
+    for p in "${EXTRA_PORTS[@]:-}"; do
+      [[ -z "$p" ]] && continue
+      cat <<EOF
+  - name: tcp-${p}
+    port: ${p}
+    protocol: TCP
+    allowedRoutes:
+      namespaces:
+        from: All
+EOF
+    done
+  } > "${gateway_yaml}"
+
+  kubectl apply -f "${gateway_yaml}"
+  rm -f "${gateway_yaml}"
+
+  log "Istio 가 Gateway 프록시(Deployment/${GATEWAY_NAME})를 자동 생성할 때까지 대기합니다."
+  local waited=0
+  until kubectl get deployment "${GATEWAY_NAME}" -n istio-system >/dev/null 2>&1; do
+    sleep 2
+    waited=$((waited + 2))
+    [[ "${waited}" -lt 60 ]] || die "Gateway 프록시(Deployment/${GATEWAY_NAME})가 60초 내에 생성되지 않았습니다."
+  done
+
+  log "자동 생성된 게이트웨이가 kind 노드에서 80/443(+추가 포트)을 직접 사용할 수 있도록 hostNetwork 로 패치합니다."
+  kubectl patch deployment "${GATEWAY_NAME}" -n istio-system --type merge -p '{
     "spec": {
       "template": {
         "spec": {
@@ -259,56 +348,7 @@ install_istio() {
     }
   }'
 
-  kubectl rollout status deployment/istio-ingressgateway -n istio-system --timeout=180s
-}
-
-apply_gateway() {
-  log "Istio Gateway 리소스를 생성합니다. (80, 443${EXTRA_PORTS:+, ${EXTRA_PORTS[*]}})"
-
-  local gateway_yaml
-  gateway_yaml="$(mktemp -t istio-gateway)"
-
-  {
-    cat <<'EOF'
-apiVersion: networking.istio.io/v1
-kind: Gateway
-metadata:
-  name: kubelab-gateway
-  namespace: istio-system
-spec:
-  selector:
-    istio: ingressgateway
-  servers:
-  - port:
-      number: 80
-      name: http
-      protocol: HTTP
-    hosts:
-    - "*"
-  - port:
-      number: 443
-      name: tls
-      protocol: TLS
-    tls:
-      mode: PASSTHROUGH
-    hosts:
-    - "*"
-EOF
-    for p in "${EXTRA_PORTS[@]:-}"; do
-      [[ -z "$p" ]] && continue
-      cat <<EOF
-  - port:
-      number: ${p}
-      name: tcp-${p}
-      protocol: TCP
-    hosts:
-    - "*"
-EOF
-    done
-  } > "${gateway_yaml}"
-
-  kubectl apply -f "${gateway_yaml}"
-  rm -f "${gateway_yaml}"
+  kubectl rollout status deployment/"${GATEWAY_NAME}" -n istio-system --timeout=180s
 }
 
 # ---------------------------------------------------------------------------
@@ -345,7 +385,7 @@ cat <<EOF
   확인 명령어:
     kubectl get nodes
     kubectl get pods -n istio-system
-    kubectl get gateway -n istio-system
+    kubectl get gateway.gateway.networking.k8s.io -n istio-system
     kubectl top nodes
     kubectl top pods -A
     kubens

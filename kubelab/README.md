@@ -3,7 +3,7 @@
 Mac에 colima + kind 기반 kubernetes 학습/실습 환경을 설치/삭제하는 스크립트.
 
 - `install-kubelab-mac.sh` — colima, kind, kubectl, kubens, istioctl, k9s 설치 → colima 기동 →
-  kind 클러스터 생성 → kubectl 연결 → metrics-server 설치 → Istio ingress gateway 설치까지 한 번에 진행
+  kind 클러스터 생성 → kubectl 연결 → metrics-server 설치 → Istio(Gateway API 방식) 설치까지 한 번에 진행
 - `uninstall-kubelab-mac.sh` — 위에서 만든 클러스터/VM/도구를 정리
 
 둘 다 macOS 전용이며 [Homebrew](https://brew.sh)를 패키지 관리자로 사용합니다 (없으면 자동 설치).
@@ -18,12 +18,12 @@ Mac에 colima + kind 기반 kubernetes 학습/실습 환경을 설치/삭제하�
 |---|---|---|
 | `-c, --cpu <num>` | colima VM에 할당할 CPU 코어 수 | 4 |
 | `-m, --memory <num>` | colima VM에 할당할 메모리(GB) | 8 |
-| `-p, --port <port>` | Istio Gateway에 추가로 열어줄 포트 (여러 번 지정 가능) | - |
+| `-p, --port <port>` | Gateway에 추가로 열어줄 포트 (여러 번 지정 가능) | - |
 | `-n, --name <name>` | kind 클러스터 이름 | `kubelab` |
 | `-k, --k8s-version <x.y.z>` | kind 클러스터의 kubernetes 버전 직접 지정 | 아래 "고정된 버전" 참고 |
 | `-h, --help` | 도움말 출력 | - |
 
-80, 443 포트는 옵션 없이도 항상 Istio Gateway에 열립니다.
+80, 443 포트는 옵션 없이도 항상 Gateway에 열립니다.
 
 예시:
 ```bash
@@ -46,12 +46,24 @@ Mac에 colima + kind 기반 kubernetes 학습/실습 환경을 설치/삭제하�
 | kind | 로컬 kubernetes 클러스터 | brew (없을 때만) |
 | kubectl | 클러스터 제어 CLI | brew (없을 때만) |
 | kubens (kubectx) | 네임스페이스 전환 CLI | brew (없을 때만) |
-| istioctl / Istio | ingress gateway (Envoy) | brew (없을 때만) |
+| istioctl / Istio | 게이트웨이용 컨트롤플레인 (Envoy 프록시) | brew (없을 때만) |
 | k9s | 클러스터 TUI 대시보드 | brew (없을 때만) |
 | metrics-server | `kubectl top`, k9s 리소스 뷰용 메트릭 | 클러스터 내부에 매니페스트 적용 |
 
-nginx ingress controller는 EOL이라 Istio ingress gateway(Envoy)를 대신 설치하고, `istio-system`
-네임스페이스에 `kubelab-gateway` Gateway 리소스로 80/443(+추가 포트)를 노출합니다.
+nginx ingress controller는 EOL이라 Istio를 대신 설치합니다. 다만 서비스 메시 전체(사이드카
+자동 주입 등)가 필요한 게 아니라 게이트웨이 하나만 있으면 되므로 Kubernetes
+[Gateway API](https://gateway-api.sigs.k8s.io/) 방식을 씁니다.
+
+1. Gateway API CRD 설치 (experimental channel — 443 TLS passthrough, 임의 TCP 포트에 필요한
+   TLSRoute/TCPRoute가 여기 포함됨)
+2. Istio는 `profile=minimal`로 설치 — 컨트롤플레인(istiod)만 설치되고, 정적으로 떠 있는
+   `istio-ingressgateway` 같은 건 없음
+3. `istio-system` 네임스페이스에 `gatewayClassName: istio`인 Gateway 리소스
+   (`kubelab-gateway`)를 적용하면, 그 즉시 Istio가 필요한 프록시 Deployment/Service를
+   자동으로 만들어줌 → 이걸 hostNetwork로 패치해서 80/443(+추가 포트)을 kind 노드에 직접 노출
+
+즉 필요한 만큼만(게이트웨이 하나) 떠 있고, 별도 애드온이나 사이드카 주입 같은 메시 기능은
+전혀 켜져 있지 않습니다.
 
 ### kubernetes 버전 고정
 
@@ -73,6 +85,9 @@ PINNED_KIND_NODE_IMAGE="kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea
 새 기본 노드 이미지의 `kindest/node:vX.Y.Z@sha256:...` 값을 확인해 `PINNED_K8S_VERSION`,
 `PINNED_KIND_NODE_IMAGE`를 직접 갱신하세요. 자동으로 매번 최신을 따라가지 않는 이유는
 재현성 때문입니다 — 몇 달 뒤 재실행해도 그때와 동일한 버전이 뜨도록 고정해 둡니다.
+
+같은 이유로 Gateway API CRD 버전도 고정되어 있습니다 (`PINNED_GATEWAY_API_VERSION="1.6.1"`).
+새 버전은 [gateway-api 릴리스](https://github.com/kubernetes-sigs/gateway-api/releases)에서 확인하세요.
 
 ## 삭제: uninstall-kubelab-mac.sh
 
