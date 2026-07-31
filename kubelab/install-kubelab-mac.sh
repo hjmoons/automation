@@ -186,8 +186,29 @@ start_colima() {
 # ---------------------------------------------------------------------------
 create_kind_cluster() {
   if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
-    log "kind 클러스터 '${CLUSTER_NAME}' 이미 존재합니다. 생성을 건너뜁니다."
-    return
+    # kind get clusters 는 노드 컨테이너가 존재하기만 하면 "있음"으로 판단한다.
+    # colima 를 stop 했다가 다시 start 한 경우, VM 은 다시 뜨지만 그 안의 노드
+    # 컨테이너는 자동으로 재시작되지 않아 꺼진 채로 남아있을 수 있다. 그 상태를
+    # 구분해서 먼저 재시작을 시도하고, 안 되면 지우고 새로 만든다.
+    if docker inspect -f '{{.State.Running}}' "${CLUSTER_NAME}-control-plane" 2>/dev/null | grep -qx true; then
+      log "kind 클러스터 '${CLUSTER_NAME}' 이미 존재하고 실행 중입니다. 생성을 건너뜁니다."
+      return
+    fi
+
+    log "kind 클러스터 '${CLUSTER_NAME}' 컨테이너가 꺼져 있습니다 (colima stop/start 이후 흔한 현상). 재시작을 시도합니다."
+    if docker start "${CLUSTER_NAME}-control-plane" >/dev/null 2>&1; then
+      log "노드 컨테이너 재시작 완료. 준비될 때까지 잠시 대기합니다."
+      sleep 5
+      if kubectl --context "kind-${CLUSTER_NAME}" get nodes >/dev/null 2>&1; then
+        log "kind 클러스터 '${CLUSTER_NAME}' 정상 확인. 생성을 건너뜁니다."
+        return
+      fi
+      warn "재시작 후에도 클러스터가 정상 응답하지 않습니다. 삭제하고 새로 만듭니다."
+    else
+      warn "노드 컨테이너 재시작 실패. 삭제하고 새로 만듭니다."
+    fi
+
+    kind delete cluster --name "${CLUSTER_NAME}" || true
   fi
 
   log "kind 클러스터 '${CLUSTER_NAME}' 를 생성합니다. (포트: 80, 443${EXTRA_PORTS:+, ${EXTRA_PORTS[*]}}, image: ${KIND_NODE_IMAGE})"

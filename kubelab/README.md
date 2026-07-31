@@ -182,3 +182,18 @@ rm -rf ~/.cache/lima
 # 실제 원인을 자세히 보고 싶으면
 curl -v -L "https://github.com/abiosoft/colima-core/releases/download/v0.10.4/ubuntu-24.04-minimal-cloudimg-arm64-docker.raw.gz" -o /dev/null
 ```
+
+### 재설치했는데 "failed to get cluster internal kubeconfig: ... is not running" 에러
+
+`kind get clusters`는 노드 컨테이너가 존재하기만 하면 "클러스터 있음"으로 판단하는데,
+colima를 `stop`했다가 다시 `start`하면 VM은 다시 뜨지만 그 안의 kind 노드 컨테이너는
+자동으로 재시작되지 않아 꺼진 채로 남아있을 수 있습니다. 이 상태에서 `kubectl` 연결을
+시도하면 위 에러가 납니다.
+
+`install-kubelab-mac.sh`는 이 상태를 감지해서 노드 컨테이너를 자동으로 재시작 시도하고,
+그래도 안 되면 클러스터를 삭제하고 새로 만들도록 되어 있습니다. 수동으로 정리하고 싶으면:
+
+```bash
+kind delete cluster --name kubelab
+./install-kubelab-mac.sh
+```
