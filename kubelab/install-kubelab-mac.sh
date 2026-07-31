@@ -21,6 +21,9 @@
 #   ingressgateway 없음) 로 설치 → Gateway 리소스(gatewayClassName: istio)를
 #   적용하면 Istio 가 그 즉시 필요한 프록시 Deployment/Service 를 자동 생성.
 #   80/443(+추가 포트)을 그 Gateway 리소스로 노출한다.
+# - 443 은 게이트웨이에서 TLS 를 종료(Terminate)한다. mkcert 로 *.kubelab.local
+#   와일드카드 인증서를 만들어 istio-system 에 Secret 으로 등록해두므로, 앱들은
+#   각자 인증서 없이 *.kubelab.local 호스트명으로 https 를 바로 쓸 수 있다.
 #
 # Usage:
 #   ./install-kubelab-mac.sh [-c|--cpu <num>] [-m|--memory <GB>] [-p|--port <port>]... [-n|--name <cluster-name>] [-k|--k8s-version <x.y.z>]
@@ -40,8 +43,8 @@ set -euo pipefail
 PINNED_K8S_VERSION="1.36.1"
 PINNED_KIND_NODE_IMAGE="kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
 
-# Gateway API CRD 버전. TLS passthrough(443)/임의 TCP 포트를 쓰려면 TCPRoute,
-# TLSRoute 가 포함된 experimental 채널이 필요하다.
+# Gateway API CRD 버전. 임의 TCP 포트(-p/--port)를 쓰려면 TCPRoute 가 포함된
+# experimental 채널이 필요하다.
 # (https://github.com/kubernetes-sigs/gateway-api/releases/tag/v1.6.1)
 PINNED_GATEWAY_API_VERSION="1.6.1"
 
@@ -55,6 +58,12 @@ COLIMA_MEMORY=8
 EXTRA_PORTS=()
 K8S_VERSION=""   # -k/--k8s-version 로 지정 안 하면 PINNED_K8S_VERSION 사용
 GATEWAY_NAME="kubelab-gateway"
+
+# 443 은 게이트웨이에서 TLS 를 종료(Terminate)한다. 각 앱은 이 와일드카드
+# 도메인 아래 호스트명을 쓰면 되고(예: myapp.kubelab.local), 맥의
+# /etc/hosts 에 127.0.0.1 로 등록해서 사용한다.
+TLS_DOMAIN="kubelab.local"
+TLS_SECRET_NAME="kubelab-tls"
 
 # ---------------------------------------------------------------------------
 # 로그 헬퍼
@@ -271,6 +280,37 @@ install_istio() {
 }
 
 # ---------------------------------------------------------------------------
+# 443 용 TLS 인증서 준비 (mkcert 로컬 신뢰 인증서)
+#
+# 게이트웨이가 TLS 를 종료(Terminate)하려면 인증서가 필요하다. 어떤 앱이
+# 나중에 붙을지 미리 알 수 없으므로, *.kubelab.local 와일드카드 인증서 하나를
+# 만들어 istio-system 에 Secret 으로 등록해두고 모든 앱이 같이 쓰게 한다.
+# mkcert -install 은 맥의 로컬 키체인에 신뢰 루트 CA 를 등록하므로 브라우저/curl
+# 에서 인증서 경고 없이 https 로 접속할 수 있다.
+# ---------------------------------------------------------------------------
+provision_tls_cert() {
+  if kubectl get secret "${TLS_SECRET_NAME}" -n istio-system >/dev/null 2>&1; then
+    log "TLS 인증서(Secret/${TLS_SECRET_NAME})가 이미 있습니다."
+    return
+  fi
+
+  log "mkcert 로컬 신뢰 루트 CA 를 확인/등록합니다 (맥 키체인에 추가될 수 있습니다)."
+  mkcert -install
+
+  log "*.${TLS_DOMAIN} / ${TLS_DOMAIN} 인증서를 생성합니다."
+  local cert_dir
+  cert_dir="$(mktemp -d -t kubelab-tls)"
+  ( cd "${cert_dir}" && mkcert -cert-file tls.crt -key-file tls.key "*.${TLS_DOMAIN}" "${TLS_DOMAIN}" )
+
+  kubectl create secret tls "${TLS_SECRET_NAME}" \
+    -n istio-system \
+    --cert="${cert_dir}/tls.crt" \
+    --key="${cert_dir}/tls.key"
+
+  rm -rf "${cert_dir}"
+}
+
+# ---------------------------------------------------------------------------
 # Gateway API Gateway 리소스 적용
 #
 # gatewayClassName: istio 로 리소스를 만들면 Istio 가 그 이름 그대로
@@ -301,9 +341,12 @@ spec:
         from: All
   - name: https
     port: 443
-    protocol: TLS
+    protocol: HTTPS
     tls:
-      mode: Passthrough
+      mode: Terminate
+      certificateRefs:
+      - name: ${TLS_SECRET_NAME}
+        kind: Secret
     allowedRoutes:
       namespaces:
         from: All
@@ -363,12 +406,14 @@ ensure_cli kubectl kubectl
 ensure_cli kubens kubectx
 ensure_cli istioctl istioctl
 ensure_cli k9s k9s
+ensure_cli mkcert mkcert
 
 start_colima
 create_kind_cluster
 setup_kubeconfig
 install_metrics_server
 install_istio
+provision_tls_cert
 apply_gateway
 
 cat <<EOF
@@ -381,6 +426,11 @@ cat <<EOF
   kubernetes 버전 : v${K8S_VERSION}
   colima 리소스   : CPU ${COLIMA_CPU} / Memory ${COLIMA_MEMORY}GB
   열린 포트       : 80, 443${EXTRA_PORTS:+, ${EXTRA_PORTS[*]}}
+  TLS 도메인      : *.${TLS_DOMAIN} (Secret/${TLS_SECRET_NAME}, istio-system)
+
+  앱에서 https 쓰는 법:
+    1) 맥 /etc/hosts 에 추가: 127.0.0.1 myapp.${TLS_DOMAIN}
+    2) HTTPRoute 의 hostnames 에 myapp.${TLS_DOMAIN} 지정, parentRefs 는 ${GATEWAY_NAME}(istio-system)
 
   확인 명령어:
     kubectl get nodes
