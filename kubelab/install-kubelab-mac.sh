@@ -298,13 +298,18 @@ install_istio() {
 # ---------------------------------------------------------------------------
 # Gateway API Gateway 리소스 적용
 #
-# gatewayClassName: istio 로 리소스를 만들면 Istio 가 그 이름 그대로
-# Deployment/Service 를 자동 생성한다. kind 에서는 그 프록시가 80/443(+추가 포트)을
-# 직접 리슨해야 extraPortMappings 와 맞물리므로, 자동 생성된 뒤에 hostNetwork 로 패치한다.
+# gatewayClassName: istio 로 리소스를 만들면 Istio 가 "<Gateway 이름>-istio" 라는
+# 이름으로 Deployment/Service 를 자동 생성한다 (Gateway 와 완전히 같은 이름이 아님).
+# kind 에서는 그 프록시가 80/443(+추가 포트)을 직접 리슨해야 extraPortMappings 와
+# 맞물리므로, 자동 생성된 뒤에 hostNetwork 로 패치한다. 기본 Service 타입은
+# LoadBalancer 인데 kind 에는 LB 컨트롤러가 없어 주소가 영원히 Pending 상태로 남고
+# Gateway 의 Programmed 조건도 False 로 남으므로, 애초에 ClusterIP 로 강제한다
+# (hostNetwork 로 패치할 거라 Service 자체의 외부 주소는 필요 없다).
 # ---------------------------------------------------------------------------
 apply_gateway() {
   log "Gateway API Gateway 리소스를 생성합니다. (80, 443${EXTRA_PORTS:+, ${EXTRA_PORTS[*]}})"
 
+  local proxy_name="${GATEWAY_NAME}-istio"
   local gateway_yaml
   gateway_yaml="$(mktemp -t gateway-api)"
 
@@ -315,6 +320,8 @@ kind: Gateway
 metadata:
   name: ${GATEWAY_NAME}
   namespace: istio-system
+  annotations:
+    networking.istio.io/service-type: ClusterIP
 spec:
   gatewayClassName: istio
   listeners:
@@ -349,16 +356,16 @@ EOF
   kubectl apply -f "${gateway_yaml}"
   rm -f "${gateway_yaml}"
 
-  log "Istio 가 Gateway 프록시(Deployment/${GATEWAY_NAME})를 자동 생성할 때까지 대기합니다."
+  log "Istio 가 Gateway 프록시(Deployment/${proxy_name})를 자동 생성할 때까지 대기합니다."
   local waited=0
-  until kubectl get deployment "${GATEWAY_NAME}" -n istio-system >/dev/null 2>&1; do
+  until kubectl get deployment "${proxy_name}" -n istio-system >/dev/null 2>&1; do
     sleep 2
     waited=$((waited + 2))
-    [[ "${waited}" -lt 60 ]] || die "Gateway 프록시(Deployment/${GATEWAY_NAME})가 60초 내에 생성되지 않았습니다."
+    [[ "${waited}" -lt 300 ]] || die "Gateway 프록시(Deployment/${proxy_name})가 300초 내에 생성되지 않았습니다."
   done
 
   log "자동 생성된 게이트웨이가 kind 노드에서 80/443(+추가 포트)을 직접 사용할 수 있도록 hostNetwork 로 패치합니다."
-  kubectl patch deployment "${GATEWAY_NAME}" -n istio-system --type merge -p '{
+  kubectl patch deployment "${proxy_name}" -n istio-system --type merge -p '{
     "spec": {
       "template": {
         "spec": {
@@ -373,7 +380,7 @@ EOF
     }
   }'
 
-  kubectl rollout status deployment/"${GATEWAY_NAME}" -n istio-system --timeout=180s
+  kubectl rollout status deployment/"${proxy_name}" -n istio-system --timeout=180s
 }
 
 # ---------------------------------------------------------------------------
