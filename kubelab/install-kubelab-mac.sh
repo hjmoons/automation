@@ -365,6 +365,11 @@ EOF
   done
 
   log "자동 생성된 게이트웨이가 kind 노드에서 80/443(+추가 포트)을 직접 사용할 수 있도록 hostNetwork 로 패치합니다."
+  # 자동 생성된 파드는 기본적으로 securityContext.sysctls 에
+  # net.ipv4.ip_unprivileged_port_start 를 넣어서 root 없이도 80/443 을 열 수 있게
+  # 해준다. 그런데 이 sysctl 은 파드 전용 네트워크 네임스페이스가 있어야 설정 가능한데
+  # hostNetwork=true 는 호스트 네트워크 네임스페이스를 그대로 쓰므로 둘을 같이 쓰면
+  # API 검증에서 거부된다. hostNetwork 로 바꿀 때 이 sysctl 설정은 같이 지워야 한다.
   kubectl patch deployment "${proxy_name}" -n istio-system --type merge -p '{
     "spec": {
       "template": {
@@ -374,7 +379,10 @@ EOF
           "nodeSelector": { "ingress-ready": "true" },
           "tolerations": [
             { "key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule" }
-          ]
+          ],
+          "securityContext": {
+            "sysctls": null
+          }
         }
       }
     }
