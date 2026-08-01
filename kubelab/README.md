@@ -60,7 +60,16 @@ nginx ingress controller는 EOL이라 Istio를 대신 설치합니다. 다만 �
    `istio-ingressgateway` 같은 건 없음
 3. `istio-system` 네임스페이스에 `gatewayClassName: istio`인 Gateway 리소스
    (`kubelab-gateway`)를 적용하면, 그 즉시 Istio가 필요한 프록시 Deployment/Service를
-   자동으로 만들어줌 → 이걸 hostNetwork로 패치해서 80/443(+추가 포트)을 kind 노드에 직접 노출
+   자동으로 만들어줌:
+   - 이름은 Gateway 리소스 이름과 다르게 **`kubelab-gateway-istio`**로 생성됨
+     (`kubectl get pods -n istio-system`으로 찾을 때 참고)
+   - 기본 Service 타입은 `LoadBalancer`인데 kind에는 LB 컨트롤러가 없어 주소가 영원히
+     `Pending`으로 남기 때문에, `networking.istio.io/service-type: ClusterIP` 어노테이션으로
+     강제함 (hostNetwork로 노출할 거라 Service의 외부 주소 자체가 필요 없음)
+   - 자동 생성된 파드에는 기본으로 `securityContext.sysctls`
+     (`net.ipv4.ip_unprivileged_port_start`)가 들어있는데, 이건 hostNetwork와 같이 못 써서
+     hostNetwork로 패치할 때 같이 제거함
+   - 이후 hostNetwork로 패치해서 80/443(+추가 포트)을 kind 노드에 직접 노출
 
 443은 게이트웨이가 인증서 없이 그냥 통과(Passthrough)시킵니다 — SNI(호스트명)만 보고
 뒤로 흘려보낼 뿐, TLS 종료(=인증서)는 각 앱이 자기 파드 안에서 직접 처리합니다. 그래서
