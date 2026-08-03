@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -e
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIR="$(cd "$BIN_DIR/.." && pwd)"
+VENV="$DIR/.venv"
+PID_FILE="$BIN_DIR/.budget.pids"
+
+start() {
+  if [ -f "$PID_FILE" ]; then
+    echo "already running (pid file exists: $PID_FILE). run 'budget stop' first."
+    exit 1
+  fi
+
+  cd "$DIR/backend"
+  nohup "$VENV/bin/uvicorn" app.main:app --host 0.0.0.0 --port 8000 > /tmp/budget-backend.log 2>&1 &
+  echo $! > "$PID_FILE"
+
+  cd "$DIR/dashboard"
+  nohup "$VENV/bin/streamlit" run app.py --server.port 8501 --server.headless true > /tmp/budget-dashboard.log 2>&1 &
+  echo $! >> "$PID_FILE"
+
+  echo "started. backend: http://localhost:8000  dashboard: http://localhost:8501"
+}
+
+stop() {
+  if [ ! -f "$PID_FILE" ]; then
+    echo "not running"
+    exit 0
+  fi
+  while read -r pid; do
+    kill "$pid" 2>/dev/null || true
+  done < "$PID_FILE"
+  rm -f "$PID_FILE"
+  echo "stopped"
+}
+
+status() {
+  if [ -f "$PID_FILE" ]; then
+    echo "running (pids: $(tr '\n' ' ' < "$PID_FILE"))"
+  else
+    echo "not running"
+  fi
+}
+
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  status) status ;;
+  *)
+    echo "usage: budget {start|stop|status}"
+    exit 1
+    ;;
+esac

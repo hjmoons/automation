@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# budget-tracker
+budget-tracker/data/
+budget-tracker/bin/.budget.pids
