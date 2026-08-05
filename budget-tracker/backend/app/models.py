@@ -7,7 +7,15 @@ from sqlmodel import Field, SQLModel
 class Category(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
+    type: str  # income | expense
     parent_id: Optional[int] = Field(default=None, foreign_key="category.id")
+    monthly_budget: Optional[int] = None
+
+
+class CategoryUpdate(SQLModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    parent_id: Optional[int] = None
     monthly_budget: Optional[int] = None
 
 
@@ -32,7 +40,6 @@ class Transaction(SQLModel, table=True):
     source: str  # sms_auto | photo_auto | manual
     receipt_image_path: Optional[str] = None
     memo: Optional[str] = None
-    confirmed: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -48,7 +55,6 @@ class TransactionCreate(SQLModel):
     source: str
     receipt_image_path: Optional[str] = None
     memo: Optional[str] = None
-    confirmed: bool = False
 
 
 class TransactionUpdate(SQLModel):
@@ -59,4 +65,3 @@ class TransactionUpdate(SQLModel):
     asset_id: Optional[int] = None
     to_asset_id: Optional[int] = None
     memo: Optional[str] = None
-    confirmed: Optional[bool] = None
