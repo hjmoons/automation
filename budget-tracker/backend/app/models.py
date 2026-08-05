@@ -25,9 +25,10 @@ class Transaction(SQLModel, table=True):
     date: datetime
     title: str
     amount: int
-    type: str  # income | expense
+    type: str  # income | expense | transfer
     category_id: Optional[int] = Field(default=None, foreign_key="category.id")
     asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
+    to_asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
     source: str  # sms_auto | photo_auto | manual
     receipt_image_path: Optional[str] = None
     memo: Optional[str] = None
@@ -43,6 +44,7 @@ class TransactionCreate(SQLModel):
     type: str
     category_id: Optional[int] = None
     asset_id: Optional[int] = None
+    to_asset_id: Optional[int] = None
     source: str
     receipt_image_path: Optional[str] = None
     memo: Optional[str] = None
@@ -55,5 +57,6 @@ class TransactionUpdate(SQLModel):
     type: Optional[str] = None
     category_id: Optional[int] = None
     asset_id: Optional[int] = None
+    to_asset_id: Optional[int] = None
     memo: Optional[str] = None
     confirmed: Optional[bool] = None

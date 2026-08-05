@@ -220,3 +220,5 @@ __marimo__/
 # budget-tracker
 budget-tracker/data/
 budget-tracker/bin/.budget.pids
+
+.playwright-mcp/

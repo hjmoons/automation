@@ -22,6 +22,21 @@ def get_transactions():
     return requests.get(f"{API_URL}/transactions/").json()
 
 
+def compute_current_balance(asset_id, opening_balance, transactions):
+    balance = opening_balance or 0
+    for t in transactions:
+        if t["type"] == "income" and t["asset_id"] == asset_id:
+            balance += t["amount"]
+        elif t["type"] == "expense" and t["asset_id"] == asset_id:
+            balance -= t["amount"]
+        elif t["type"] == "transfer":
+            if t["asset_id"] == asset_id:
+                balance -= t["amount"]
+            if t.get("to_asset_id") == asset_id:
+                balance += t["amount"]
+    return balance
+
+
 categories = get_categories()
 assets = get_assets()
 category_options = {c["name"]: c["id"] for c in categories}
@@ -46,9 +61,12 @@ with tab_add:
         t_date = st.date_input("날짜", value=date.today())
         title = st.text_input("항목명")
         amount = st.number_input("금액", min_value=0, step=100)
-        t_type = st.selectbox("구분", ["expense", "income"])
+        t_type = st.selectbox("구분", ["expense", "income", "transfer"])
         category_name = st.selectbox("카테고리", list(category_options.keys()) or ["(없음)"])
-        asset_name = st.selectbox("결제수단", list(asset_options.keys()) or ["(없음)"])
+        asset_name = st.selectbox("결제수단 / 보내는 계좌", list(asset_options.keys()) or ["(없음)"])
+        to_asset_name = st.selectbox(
+            "받는 계좌 (이체일 때만)", ["(해당없음)"] + list(asset_options.keys())
+        )
         memo = st.text_input("메모")
         submitted = st.form_submit_button("저장")
         if submitted:
@@ -59,6 +77,7 @@ with tab_add:
                 "type": t_type,
                 "category_id": category_options.get(category_name),
                 "asset_id": asset_options.get(asset_name),
+                "to_asset_id": asset_options.get(to_asset_name) if t_type == "transfer" else None,
                 "source": "manual",
                 "memo": memo,
                 "confirmed": True,
@@ -97,8 +116,13 @@ with tab_edit:
 
 with tab_assets:
     if assets:
-        st.dataframe(assets, use_container_width=True)
-        total_balance = sum(a["balance"] or 0 for a in assets)
+        transactions = get_transactions()
+        display_assets = [
+            {**a, "현재 잔액": compute_current_balance(a["id"], a["balance"], transactions)}
+            for a in assets
+        ]
+        st.dataframe(display_assets, use_container_width=True)
+        total_balance = sum(d["현재 잔액"] for d in display_assets)
         st.metric("총 자산", f"{total_balance:,}원")
     else:
         st.info("등록된 자산이 없습니다.")
